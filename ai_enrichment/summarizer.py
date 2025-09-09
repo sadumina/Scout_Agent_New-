@@ -1,24 +1,24 @@
 import os
-import openai
+from openai import OpenAI
 from dotenv import load_dotenv
 
-# Load variables from .env in the project root
+# Load variables from .env
 load_dotenv()
 
-# Read API key from environment
+# Create client with API key
 api_key = os.getenv("OPENAI_API_KEY")
-
 if not api_key:
     print("⚠️ OPENAI_API_KEY not found in environment! Using raw text instead of enrichment.")
+    client = None
 else:
-    openai.api_key = api_key
+    client = OpenAI(api_key=api_key)
 
-def enrich_update(text):
+def enrich_update(text: str) -> str:
     """
     Summarize the update text with OpenAI if key is available,
     otherwise just return the raw text.
     """
-    if not api_key:
+    if not client:
         return text  # fallback: no enrichment
 
     prompt = f"""
@@ -32,12 +32,13 @@ def enrich_update(text):
     """
 
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # ✅ correct new API
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
+            temperature=0.2,
+            max_tokens=150,
         )
-        return response.choices[0].message["content"]
+        return response.choices[0].message.content.strip()
     except Exception as e:
         print(f"❌ Enrichment failed: {e}")
-        return text  # fallback to raw description
+        return text  # fallback
