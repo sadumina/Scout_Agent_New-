@@ -17,6 +17,11 @@ FEED_URLS = {
     "Automotive Filters": "https://news.google.com/rss/search?q=automotive+carbon+filter",
     "Medical & Pharma": "https://news.google.com/rss/search?q=medical+pharma+carbon",
     "Nuclear Applications": "https://news.google.com/rss/search?q=nuclear+carbon+filter",
+    "EDLC": "https://news.google.com/rss/search?q=supercapacitor+EDLC",
+    "Silicon Anodes": "https://news.google.com/rss/search?q=silicon+anodes+battery",
+    "Lithium Iron Batteries": "https://news.google.com/rss/search?q=lithium+iron+phosphate+battery",
+    "Carbon Block Filters": "https://news.google.com/rss/search?q=activated+carbon+block+filters"
+
 }
 
 def clean_html(raw_html: str) -> str:
