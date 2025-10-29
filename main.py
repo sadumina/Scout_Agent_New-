@@ -3,9 +3,9 @@ import json
 import asyncio
 import httpx
 import re
-from datetime import datetime, timedelta
-from typing import List, Dict, Any
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from datetime import datetime, timedelta, timezone
+from typing import List
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -16,161 +16,160 @@ from db import init_db, insert_article, get_cached_articles
 # 🔧 CONFIG
 # ======================================
 load_dotenv()
-GNEWS_API_KEY = os.getenv("GNEWS_API_KEY", "")
-CURRENTS_API_KEY = os.getenv("CURRENTS_API_KEY", "")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+SERPER_KEY = os.getenv("SERPER_API_KEY")  # ✅ Serper API Key
 
 app = FastAPI(title="HAYCARB Market Scout API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ✅ Change to ["http://localhost:5173"] in production
-    allow_credentials=True,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # ✅ specify frontend
+    allow_credentials=False,  # ✅ MUST be false when origins are "*"
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 connections: List[WebSocket] = []
 client = OpenAI(api_key=OPENAI_KEY)
+
 
 # ======================================
 # 🧠 AI SUMMARIZATION
 # ======================================
 async def ai_summarize(text: str) -> str:
     if not text:
-        return "No description available."
+        return "No summary available."
+
     try:
-        prompt = f"Summarize this business article in one short insight (max 25 words):\n\n{text}"
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": f"Summarize in 25 words:\n{text}"}],
         )
-        summary = response.choices[0].message.content.strip()
-        return re.sub(r"\s+", " ", summary)
+        return response.choices[0].message.content.strip()
+
     except Exception as e:
-        print("⚠️ AI summarization error:", e)
-        return (text[:150] + "...") if len(text) > 150 else text
+        print("⚠️ Summarization skipped:", e)
+        return text[:150] + "..."   # ✅ return raw text, don't crash
+
 
 
 # ======================================
-# 🌍 FETCH NEWS — CurrentsAPI + GNews Fallback
+# 🌍 FETCH NEWS (Serper.dev → Google News API)
 # ======================================
-async def fetch_currents(product: str, limit: int = 8):
-    """Fetch global news from CurrentsAPI."""
-    if not CURRENTS_API_KEY:
-        print("⚠️ No CurrentsAPI key found — skipping.")
-        return []
-
-    url = f"https://api.currentsapi.services/v1/search?apiKey={CURRENTS_API_KEY}&language=en&keywords={product}"
-    async with httpx.AsyncClient() as http:
-        try:
-            res = await http.get(url, timeout=15)
-            if res.status_code == 429:
-                print(f"❌ CurrentsAPI rate limit hit for {product}")
-                return []
-            if res.status_code != 200:
-                print(f"❌ CurrentsAPI error: {res.status_code}")
-                return []
-            articles = res.json().get("news", [])
-        except Exception as e:
-            print("❌ CurrentsAPI fetch error:", e)
-            return []
-
-    return [
-        {
-            "title": a.get("title"),
-            "source": a.get("author", "Unknown"),
-            "date": a.get("published"),
-            "summary": a.get("description") or "No description",
-            "link": a.get("url"),
-        }
-        for a in articles[:limit]
-        if a.get("title")
-    ]
-
-
-async def fetch_gnews(product: str, limit: int = 8):
-    """Fallback to GNews if CurrentsAPI fails."""
-    if not GNEWS_API_KEY:
-        print("⚠️ No GNews key found — returning mock data.")
-        return [
-            {
-                "title": f"{product} Market Expansion in Asia",
-                "source": "Market Watch",
-                "date": "2025-10-27T10:00:00Z",
-                "summary": f"Strong demand for {product} applications in Asia-Pacific.",
-                "link": "https://example.com/news1",
-            },
-            {
-                "title": f"{product} Policy Updates Released",
-                "source": "Environmental Insights",
-                "date": "2025-10-25T09:00:00Z",
-                "summary": f"Recent policy changes impact {product} standards.",
-                "link": "https://example.com/news2",
-            },
-        ]
-
-    url = (
-        f"https://gnews.io/api/v4/search?q={product}&lang=en&country=us"
-        f"&sortby=publishedAt&max={limit}&token={GNEWS_API_KEY}"
-    )
-    async with httpx.AsyncClient() as http:
-        try:
-            res = await http.get(url, timeout=15)
-            if res.status_code != 200:
-                print(f"❌ GNews error: {res.status_code}")
-                return []
-            data = res.json().get("articles", [])
-        except Exception as e:
-            print("❌ GNews fetch error:", e)
-            return []
-
-    return [
-        {
-            "title": a.get("title"),
-            "source": (a.get("source") or {}).get("name", "Unknown"),
-            "date": a.get("publishedAt"),
-            "summary": a.get("description") or "No description",
-            "link": a.get("url"),
-        }
-        for a in data
-        if a.get("title")
-    ]
-
+# ======================================
+# 🌍 FETCH NEWS (Serper.dev → Google News API)
+# Handles: "1 day ago", "15 minutes ago", "3 hours ago"
+# ======================================
 
 async def fetch_news(product: str, limit: int = 8):
-    """Try CurrentsAPI first, then fallback to GNews."""
-    news = await fetch_currents(product, limit)
-    if not news:
-        print(f"🔁 Falling back to GNews for {product}")
-        news = await fetch_gnews(product, limit)
-    return news
+    if not SERPER_KEY:
+        print("❌ SERPER_API_KEY missing in `.env`, configure it!")
+        return []
+
+    url = "https://google.serper.dev/news"
+    headers = {"X-API-KEY": SERPER_KEY}
+    payload = {"q": product, "num": limit}
+
+    async with httpx.AsyncClient() as http:
+        try:
+            res = await http.post(url, json=payload, headers=headers, timeout=15)
+            res.raise_for_status()
+        except Exception as e:
+            print("❌ Serper Fetch Error:", e)
+            return []
+
+        data = res.json().get("news", [])
+
+    news_list = []
+
+    for a in data:
+        raw_date = a.get("date", "")
+
+        # ✅ Convert "4 minutes ago", "1 day ago", "13 hours ago" → real datetime
+        if "ago" in raw_date:
+            try:
+                num, unit, *_ = raw_date.split()
+                num = int(num)
+
+                if "hour" in unit:
+                    pub_date = datetime.now(timezone.utc) - timedelta(hours=num)
+                elif "minute" in unit:
+                    pub_date = datetime.now(timezone.utc) - timedelta(minutes=num)
+                elif "day" in unit:
+                    pub_date = datetime.now(timezone.utc) - timedelta(days=num)
+                else:
+                    pub_date = datetime.now(timezone.utc)
+            except:
+                pub_date = datetime.now(timezone.utc)
+        else:
+            # ✅ Try ISO format, fallback to now()
+            try:
+                pub_date = datetime.fromisoformat(
+                    raw_date.replace("Z", "+00:00")
+                )
+            except:
+                pub_date = datetime.now(timezone.utc)
+
+        news_list.append({
+            "title": a["title"],
+            "source": a.get("source", "Unknown"),
+            "date": pub_date.isoformat(),     # ✅ Always ISO datetime
+            "summary": a.get("snippet", "No summary available"),
+            "link": a.get("link"),
+        })
+
+    print(f"✅ SERPER returned {len(news_list)} articles for {product}")
+    return news_list
 
 
 # ======================================
-# 📦 OPPORTUNITIES ENDPOINT
+# 📦 OPPORTUNITIES ENDPOINT (pagination + sorting + timezone FIX)
 # ======================================
 @app.get("/opportunities")
-async def get_opportunities(product: str, period: str = "all"):
-    now = datetime.utcnow()
+async def get_opportunities(
+    request: Request,
+    product: str,
+    period: str = "all",
+    skip: int = Query(0, ge=0),
+    limit: int = Query(8, ge=1, le=50)
+):
+
+    now = datetime.now(timezone.utc)  # ✅ timezone-aware datetime
     days_map = {"day": 1, "month": 30, "year": 365}
     cutoff = now - timedelta(days=days_map.get(period, 9999))
 
     cached = await get_cached_articles(product)
+
+    sort_order = request.query_params.get("order", "desc")  # asc = oldest first
+
+    sorted_cached = sorted(
+        cached,
+        key=lambda x: x.get("date", ""),
+        reverse=(sort_order == "desc"),
+    )
+
     filtered = []
-    for a in cached:
+    for a in sorted_cached:
         try:
-            pub_date = datetime.fromisoformat(a.get("date", "").replace("Z", "+00:00"))
+            raw_date = a.get("date", "").replace("Z", "+00:00")
+            pub_date = datetime.fromisoformat(raw_date)
+
             if pub_date >= cutoff:
                 filtered.append(a)
-        except:
-            pass
 
-    if filtered:
-        print(f"🗃️ Serving {len(filtered)} cached results for {product} ({period})")
-        return JSONResponse(content=filtered)
+        except Exception as e:
+            print("⚠️ Date parsing issue:", e)
 
+    paginated = filtered[skip: skip + limit]
+
+    if paginated:
+        print(f"🗃️ Returned {len(paginated)} cached | skip={skip}, order={sort_order}")
+        return JSONResponse(content=paginated)
+
+    # ✅ Fetch new fresh updates
     news = await fetch_news(product, limit=10)
+
     for n in news:
         n["summary"] = await ai_summarize(n.get("summary") or n["title"])
         await insert_article(product, n)
@@ -180,74 +179,7 @@ async def get_opportunities(product: str, period: str = "all"):
 
 
 # ======================================
-# 🔌 WEBSOCKET ENDPOINT
-# ======================================
-@app.websocket("/ws/updates")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    connections.append(ws)
-    print("🟢 WebSocket client connected")
-    try:
-        while True:
-            await asyncio.sleep(30)
-    except WebSocketDisconnect:
-        print("🔴 Client disconnected")
-        connections.remove(ws)
-    except Exception as e:
-        print(f"⚠️ WebSocket error: {e}")
-        if ws in connections:
-            connections.remove(ws)
-
-
-# ======================================
-# 🔁 BACKGROUND LIVE BROADCAST
-# ======================================
-async def broadcast_live_news():
-    topics = [
-        "PFAS",
-        "Activated Carbon",
-        "Sustainability",
-        "Energy Storage",
-        "Water Treatment",
-        "Mining",
-        "Carbon Capture",
-        "Electric Vehicles",
-    ]
-    i = 1
-    while True:
-        for topic in topics:
-            news = await fetch_news(topic, limit=1)
-            if not news:
-                continue
-
-            update = {
-                "id": i,
-                "topic": topic,
-                "title": news[0]["title"],
-                "source": news[0]["source"],
-                "date": news[0]["date"],
-                "summary": news[0]["summary"],
-                "link": news[0]["link"],
-            }
-
-            disconnected = []
-            for ws in connections:
-                try:
-                    await ws.send_text(json.dumps(update))
-                except:
-                    disconnected.append(ws)
-
-            for ws in disconnected:
-                connections.remove(ws)
-
-            print(f"📡 Broadcasted update #{i}: {topic}")
-            i += 1
-
-        await asyncio.sleep(600)  # every 10 min
-
-
-# ======================================
-# 💬 CHAT ENDPOINT
+# 💬 AI CHAT ENDPOINT (Assistant remains unchanged)
 # ======================================
 @app.post("/chat")
 async def chat_endpoint(request: Request):
@@ -259,45 +191,86 @@ async def chat_endpoint(request: Request):
         return JSONResponse({"response": "Please enter a question."}, status_code=400)
 
     cached_articles = await get_cached_articles(product)
-    context_text = "\n".join(
-        [f"{a['title']}: {a['summary']}" for a in cached_articles[:5]]
-    ) or "No recent data available."
+    context = "\n".join([f"- {a['title']} ({a['summary']})" for a in cached_articles[:5]])
 
     prompt = f"""
-    You are Haycarb's AI Market Assistant.
-    The user is asking about: {product}
-    Use this context if relevant:
-    {context_text}
+You are Haycarb's AI Market Intelligence Assistant.
+User is asking about: **{product}**
 
-    Now answer clearly and insightfully:
-    {user_message}
-    """
+Latest related updates:
+{context}
+
+Respond concisely and insightfully.
+User question:
+{user_message}
+"""
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a professional market research assistant."},
+                {"role": "system", "content": "You are an expert market insights assistant."},
                 {"role": "user", "content": prompt},
-            ],
+            ]
         )
-        ai_reply = response.choices[0].message.content.strip()
-        return {"response": ai_reply}
+        return {"response": response.choices[0].message.content.strip()}
+
     except Exception as e:
-        print("⚠️ AI Error:", e)
-        return {"response": "Sorry, I couldn’t process your request right now."}
+        print("⚠️ AI chat error:", e)
+        return {"response": "Something went wrong. Try again."}
+
+
+# ======================================
+# 🔌 WEBSOCKET — Live Push Notifications
+# ======================================
+@app.websocket("/ws/updates")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    connections.append(ws)
+    print("🟢 WS client connected")
+
+    try:
+        while True:
+            await ws.receive_text()  # ✅ Fix: keeps connection alive
+    except WebSocketDisconnect:
+        print("🔴 WS client disconnected")
+        connections.remove(ws)
+
+
+
+# ======================================
+# 🔁 BACKGROUND BROADCASTER
+# ======================================
+async def broadcast_live_news():
+    topics = ["PFAS", "Activated Carbon", "Gold Recovery", "Water Treatment"]
+    update_id = 1
+
+    while True:
+        for topic in topics:
+            news = await fetch_news(topic, limit=1)
+            if news:
+                for ws in connections[:]:
+                    try:
+                        await ws.send_text(json.dumps(news[0]))
+                    except:
+                        connections.remove(ws)
+
+                print(f"📡 Live Update #{update_id} sent → {topic}")
+                update_id += 1
+
+        await asyncio.sleep(600)  # every 10 minutes
 
 
 # ======================================
 # 🚀 STARTUP
 # ======================================
 @app.on_event("startup")
-async def start_background():
+async def on_startup():
     await init_db()
     asyncio.create_task(broadcast_live_news())
-    print("🚀 Background tasks started — CurrentsAPI + GNews + AI ready")
+    print("🚀 News service + AI Assistant started")
 
 
 @app.get("/health")
-def health():
-    return {"ok": True, "service": "HAYCARB Market Scout API"}
+def health_check():
+    return {"healthy": True, "AI": bool(OPENAI_KEY), "News": bool(SERPER_KEY)}

@@ -1,10 +1,13 @@
 # db.py
 import aiosqlite
+from asyncio import Lock
 
 DB_NAME = "news_cache.db"
+_write_lock = Lock()  # ✅ prevent concurrent DB writes
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("PRAGMA journal_mode=WAL;")  # ✅ allow concurrent writes
         await db.execute("""
             CREATE TABLE IF NOT EXISTS news_cache (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,12 +23,13 @@ async def init_db():
         await db.commit()
 
 async def insert_article(product, article):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            INSERT OR IGNORE INTO news_cache (product, title, summary, source, date, link)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (product, article["title"], article["summary"], article["source"], article["date"], article["link"]))
-        await db.commit()
+    async with _write_lock:  # ✅ only 1 write at a time
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("""
+                INSERT OR IGNORE INTO news_cache (product, title, summary, source, date, link)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (product, article["title"], article["summary"], article["source"], article["date"], article["link"]))
+            await db.commit()
 
 async def get_cached_articles(product, limit=10):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -36,6 +40,7 @@ async def get_cached_articles(product, limit=10):
             LIMIT ?
         """, (product, limit))
         rows = await cursor.fetchall()
+
     return [
         {"title": r[0], "summary": r[1], "source": r[2], "date": r[3], "link": r[4]}
         for r in rows
