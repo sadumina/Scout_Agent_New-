@@ -23,8 +23,11 @@ app = FastAPI(title="HAYCARB Market Scout API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # ✅ specify frontend
-    allow_credentials=False,  # ✅ MUST be false when origins are "*"
+    allow_origins=[
+        "http://localhost:5173",                      # local dev
+        "https://vehicle-detector-yg5k.vercel.app",  # your frontend domain
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
