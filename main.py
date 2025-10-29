@@ -24,8 +24,8 @@ app = FastAPI(title="HAYCARB Market Scout API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",                      # local dev
-        "https://vehicle-detector-yg5k.vercel.app",  # your frontend domain
+        "http://localhost:5173",                                   # LOCAL DEV
+        "https://scout-agent-reimplement-websockets.vercel.app",  # ✅ FRONTEND (VERCEL)
     ],
     allow_credentials=True,
     allow_methods=["*"],
